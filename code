@@ -1,0 +1,167 @@
+rm(list=ls())
+
+x=c("shiny", "shinydashboard", "plotly", "lubridate", "data.table", "DT", "dplyr")
+lapply(x, require, character.only = TRUE)
+
+# El ejemplo de dataframe que encontré
+df <- read.csv("https://ndownloader.figshare.com/files/9282364", stringsAsFactors = F)
+df <- df %>% mutate_at(vars(DATE), as.Date,"%m/%d/%y")
+
+# Funciones globales ------------------------------------------------------
+mi_max<-function(x){return(max(abs(x), na.rm=T))}
+
+bussdays<-function(x, mode){
+  dia <- weekdays(as.Date(x), abbreviate=F)
+  tryCatch({if(mode=="down"){suma=ifelse(dia=="sábado", -1, ifelse(dia=="domingo",-2,0))}
+    if(mode=="up"){suma=ifelse(dia=="sábado", +2, ifelse(dia=="domingo",+1,0))}
+    return(as.Date(x)+days(suma))}, error=function(e){warning("Falta ingresar parámetro de mode (down/up)")})
+}
+
+
+# Inicio de Programa ------------------------------------------------------
+# Acá creo fecha_plana con lo de la data, pero debiera ser un Sys.Date().
+# Lo mismo con las otras fechas.
+
+fecha_plana <- as.Date("2013-10-11")
+# fecha_plana - 1.
+fecha_valida_1 <- bussdays(fecha_plana-days(1), "down")
+
+fecha_valida_2 <- bussdays(fecha_valida_1 %m-% months(1), "down")
+ 
+# Sólo para definir una fecha válida dentro del df
+while(!fecha_valida_2 %in% df$DATE){
+   fecha_valida_2 <- bussdays(fecha_valida_2 - days(1), "down")
+}
+
+# Selección del browser: chrome. Prefiero visualizar las salidas ahí.
+# Se genera validación de versión, si no está, utiliza el browser por defecto.
+browser = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+
+if(!file.exists(browser)){
+  browser = "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"
+  
+  if(!file.exists(browser)){
+    browser=NULL
+  }
+  
+}
+
+options(browser=browser)
+
+# Creación de UI ----------------------------------------------------------
+
+r <- reactiveVal()
+
+# Ojo con esta linea.
+# Estamos definiendo el directorio de trabajo como una carpeta temporal
+
+setwd(tempdir())
+
+ui <- dashboardPage(
+  skin="blue",
+  
+  dashboardHeader(title = "DashBoard CVA"),
+  dashboardSidebar(),
+  dashboardBody(
+    # Acá se pueden agregar las cajas en columnas y/o filas.
+    #En este caso no importa. El autoasjute a partir de los anchos y largos definidos me acomoda
+    fluidRow(
+      box(title = tags$b("Temperatura según Fechas"), background = "green",
+          width=8, solidHeader = TRUE,
+          plotlyOutput("plot1", height = 250)
+      ),
+      box(width=3, height = 310,
+          title = tags$b("Inputs"),
+          # footer=tags$i("Recuerde que T > T-1.",  style="color: #000000"),
+          background = "blue", solidHeader = TRUE,
+          "Ingrese las fechas a considerar", br(), "Haga clic y luego la selección", br(), br(),
+          dateInput('fecha1', weekstart =1, language = "es",
+                    label = 'Fecha T (más actual)',
+                    value = fecha_valida_1, max=fecha_valida_1
+          ),
+          dateInput('fecha2', weekstart =1, language = "es",
+                    label = 'Fecha T-1 (anterior)',
+                    value = fecha_valida_2, min=min(df$DATE, na.rm=T), max=max(df$DATE, na.rm=T)
+          ), tags$style(HTML(".datepicker {z-index:99999 !important;}"))
+      ),
+      box(title = tags$b("Visualización Data Precipitaciones mayor a umbral seleccionado."),
+          width = 9, solidHeader = TRUE,
+          div(numericInput("n_max", label="Seleccione Umbral", value=0.3, min=0, max=10, step=0.1), style="float:top;float:left; width: 350px"),
+          actionButton(inputId = "reload", label = "Actualizar visualización",
+                       style="color: #fff; background-color: #ff0000; border-color: #00512b; float:right; padding-down:150px")
+          , div( DT::dataTableOutput("mytable") , style = "font-size:80%")
+      ),
+      img(src="https://cdni.rt.com/actualidad/public_images/2018.08/article/5b69d231e9180fc0628b4567.jpg", width=150),
+      div(tags$b("Ejemplo de shiny"), style="float:bottom")
+    )
+    
+  )
+)
+
+
+
+# Creación de SERVER ------------------------------------------------------
+
+
+server <- function(input, output) {
+  
+  # Output 1 - Render Plotly ------------------------------------------------
+  
+  output$plot1 <- renderPlotly({
+    options(warn = -1)
+    
+    # Acá se genera un filtro por fechas.
+    # Si bien para el ejemplo es algo básico, en un desarrollo real
+    # podríamos definir diversas data con SQL utilizando como input estas fechas y/o más parámetros.
+    data <- df %>% dplyr::filter(DATE >= input$fecha2 & DATE <= input$fecha1)
+    
+    # Lo mismo que lo anterior. El filtro es sólo a modo de ejemplo.
+    data_max <- data %>% filter(PRECIP >= input$n_max)
+    
+    # Guardo lo anterior como archivo temporal. Esto será lo que visualizaremos en el renderTable
+    write.csv(data_max, paste0(getwd(), "/", "variacion.csv"))
+    
+    color=c("orange", "green", "red")
+    
+    p <- plot_ly(data , type = 'scatter', mode = 'lines',
+               line = list(color = 'rgb(24, 205, 12)', width = 4)) %>% 
+    layout(#title = paste0(input$fecha1, " vs ", input$fecha2 ),
+          xaxis = list(title = "Fecha"),
+                yaxis = list (title = "Temperatura")) #%>%
+      # layout(autosize = F, width = 1000, height = 600)
+
+    # El plotly acá es simple, pero podríamos querer graficar diversas columnas.
+    # Para esto, podríamos agregar las líneas
+    # for(trace in colnames(data)[2:ncol(data)]){
+    #   p <- p %>% plotly::add_trace(x = data[['nombre_X']], y = data[[trace]], ...
+     
+    p <- p %>% plotly::add_trace(x = data[['DATE']], y = data[['TEMP']],
+                                    name = list("Temperatura"),
+                                    line= list(color = color, width = 2),
+                                  text=paste("ID : ", data[['ID']],"\n",
+                                            "Fecha : ", data[['DATE']],"\n",
+                                            "Temperatura: ", data[['TEMP']]),
+                                hoverinfo='text') 
+    options(warn = -1)
+    print(p)
+    
+    
+  })
+  
+  
+  # Output 2 - RenderTable ----------------------------------------------------
+  
+  data<- eventReactive(input$reload,{
+    fread(file=paste0(getwd(), "/", "variacion.csv"), header =TRUE, check.names = F, encoding = "UTF-8")[,-1]},
+    ignoreNULL = TRUE
+  )
+  
+  output$mytable <- DT::renderDataTable(
+    {data()}
+  )
+}
+
+on.exit(unlink(tempdir(), recursive=TRUE))
+
+
+runApp(list(ui = ui, server = server), port=5013, launch.browser = TRUE)
